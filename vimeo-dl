@@ -1,0 +1,84 @@
+#!/bin/zsh
+# http://vimeo.com/play_redirect?clip_id=16710243&quality=sd&codecs=H264
+
+export LC_ALL=C
+setopt RE_MATCH_PCRE
+
+# debug channel
+exec 3>&2
+
+curl="curl --limit-rate ${SPEED:-400}k"
+
+if [ ! -r /opt/log4sh ] ; then
+    print -u2 -- "log4sh not found, get it: http://log4sh.sf.net/"
+    exit 1;
+fi
+
+url=$1; shift;
+if ! [[ "$url" =~ "^(?:https?:\/\/vimeo.com\/)(\d+)" ]] ; then
+    print -u 2 -- error: dunno what to do with $url
+    exit 1
+fi
+id=${match[1]}
+print -u 3 "$id"
+
+redirector_hd='http://vimeo.com/play_redirect?clip_id=%s&quality=hd&codecs=H264'
+redirector_sd='http://vimeo.com/play_redirect?clip_id=%s&quality=sd&codecs=H264'
+to_fetch_hd=$(printf "$redirector_hd"'\n' "$id")
+to_fetch_sd=$(printf "$redirector_sd"'\n' "$id")
+print -u 3 -- HD: "$to_fetch_hd"
+print -u 3 -- SD: "$to_fetch_sd"
+
+
+# fetch title
+title=$(
+    curl -A chrome -s "$url" | tr -d '
+' | sed -nE '
+        # extract the title
+        s!.*?<title>!!i
+        s!</title>.*!!i
+        s![[:space:]]*on Vimeo[[:space:]]*!!
+
+        # boil down whitespaces
+        s![[:space:]][[:space:]]*!_!g
+
+        # replace special characters with _
+        s![^][[:alnum:](),-]!_!g
+        p
+'
+)
+print -u 2 cleaned up title is: "$title"
+
+
+for i in "$to_fetch_hd" "$to_fetch_sd"; do
+    print -u 3 "trying to fetch from $i"
+    ${=curl} -A chrome -f -L -o "${title}.mp4" "$i" && exit 0
+done
+
+print -u 3 "video tag didn't work, try the old method"
+
+#--2010-11-12 03:23:00--  http://www.vimeo.com/moogaloop/load/clip:3336010
+#--2010-11-12 03:23:01--  http://www.vimeo.com/moogaloop/play/clip:3336010/ea26badd5b37b57cfed472dbfe0753f3/1289530800/?q=sd
+metadata_url=$(printf 'http://vimeo.com/moogaloop/load/clip:%s' $id)
+metadata=$(curl -A chrome -f -s "$metadata_url")
+signature=$( print -- "$metadata" | xmlstarlet sel -t -v //request_signature)
+timestamp=$( print -- "$metadata" | xmlstarlet sel -t -v //request_signature_expires)
+
+print -u 3 sig: $signature
+print -u 3 time: $timestamp
+
+to_fetch=$(
+    printf "http://vimeo.com/moogaloop/play/clip:%s/%s/%s/" \
+        $id $signature $timestamp
+)
+
+to_fetch_hd="${to_fetch}?q=hd"
+to_fetch_sd="${to_fetch}?q=sd"
+
+#for i in "$to_fetch_sd"; do
+for i in "$to_fetch_hd" "$to_fetch_sd"; do
+    print -u 3 "trying to fetch from $i"
+    ${=curl} -A chrome -f -L -o "${title}.flv" "$i" && exit 0
+done
+
+exit 1
